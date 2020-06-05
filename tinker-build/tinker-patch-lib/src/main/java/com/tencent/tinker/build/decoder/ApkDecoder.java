@@ -45,6 +45,7 @@ public class ApkDecoder extends BaseDecoder {
     private final UniqueDexDiffDecoder dexPatchDecoder;
     private final BsDiffDecoder        soPatchDecoder;
     private final ResDiffDecoder       resPatchDecoder;
+    private final ArkHotDecoder arkHotDecoder;
 
     /**
      * if resource's file is also contain in dex or library pattern,
@@ -64,6 +65,8 @@ public class ApkDecoder extends BaseDecoder {
         dexPatchDecoder = new UniqueDexDiffDecoder(config, prePath + TypedValue.DEX_META_FILE, TypedValue.DEX_LOG_FILE);
         soPatchDecoder = new BsDiffDecoder(config, prePath + TypedValue.SO_META_FILE, TypedValue.SO_LOG_FILE);
         resPatchDecoder = new ResDiffDecoder(config, prePath + TypedValue.RES_META_TXT, TypedValue.RES_LOG_FILE);
+        arkHotDecoder = new ArkHotDecoder(config, prePath + TypedValue.ARKHOT_META_TXT);
+        Logger.d("config: " + config.mArkHotPatchPath + " " + config.mArkHotPatchName + prePath + TypedValue.ARKHOT_META_TXT);
         resDuplicateFiles = new ArrayList<>();
     }
 
@@ -87,9 +90,9 @@ public class ApkDecoder extends BaseDecoder {
     }
 
     private void writeToLogFile(File oldFile, File newFile) throws IOException {
-        String line1 = "old apk: " + oldFile.getName() + ", size=" + FileOperation.getFileSizes(oldFile) + ", md5=" + MD5.getMD5(oldFile);
+        String line1 = "old apk1131: " + oldFile.getName() + ", size=" + FileOperation.getFileSizes(oldFile) + ", md5=" + MD5.getMD5(oldFile);
         String line2 = "new apk: " + newFile.getName() + ", size=" + FileOperation.getFileSizes(newFile) + ", md5=" + MD5.getMD5(newFile);
-        Logger.d("Analyze old and new apk files:");
+        Logger.d("Analyze old and new apk files1:");
         Logger.d(line1);
         Logger.d(line2);
         Logger.d("");
@@ -112,9 +115,9 @@ public class ApkDecoder extends BaseDecoder {
 
         Files.walkFileTree(mNewApkDir.toPath(), new ApkFilesVisitor(config, mNewApkDir.toPath(), mOldApkDir.toPath(), dexPatchDecoder, soPatchDecoder, resPatchDecoder));
 
-        //get all duplicate resource file
+        // get all duplicate resource file
         for (File duplicateRes : resDuplicateFiles) {
-//            resPatchDecoder.patch(duplicateRes, null);
+            // resPatchDecoder.patch(duplicateRes, null);
             Logger.e("Warning: res file %s is also match at dex or library pattern, "
                 + "we treat it as unchanged in the new resource_out.zip", getRelativePathStringToOldFile(duplicateRes));
         }
@@ -123,11 +126,14 @@ public class ApkDecoder extends BaseDecoder {
         dexPatchDecoder.onAllPatchesEnd();
         manifestDecoder.onAllPatchesEnd();
         resPatchDecoder.onAllPatchesEnd();
+        arkHotDecoder.onAllPatchesEnd();
 
         //clean resources
         dexPatchDecoder.clean();
         soPatchDecoder.clean();
         resPatchDecoder.clean();
+        arkHotDecoder.clean();
+
         return true;
     }
 
@@ -175,7 +181,6 @@ public class ApkDecoder extends BaseDecoder {
                 try {
                     dexDecoder.patch(oldFile, file.toFile());
                 } catch (Exception e) {
-//                    e.printStackTrace();
                     throw new RuntimeException(e);
                 }
                 return FileVisitResult.CONTINUE;
@@ -188,7 +193,6 @@ public class ApkDecoder extends BaseDecoder {
                 try {
                     soDecoder.patch(oldFile, file.toFile());
                 } catch (Exception e) {
-//                    e.printStackTrace();
                     throw new RuntimeException(e);
                 }
                 return FileVisitResult.CONTINUE;
@@ -197,7 +201,6 @@ public class ApkDecoder extends BaseDecoder {
                 try {
                     resDecoder.patch(oldFile, file.toFile());
                 } catch (Exception e) {
-//                    e.printStackTrace();
                     throw new RuntimeException(e);
                 }
                 return FileVisitResult.CONTINUE;

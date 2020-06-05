@@ -29,6 +29,8 @@ import org.gradle.api.Project
 import org.gradle.api.tasks.TaskAction
 import org.gradle.util.GFileUtils
 
+import java.lang.reflect.Field
+import java.lang.reflect.Modifier
 import java.util.regex.Matcher
 import java.util.regex.Pattern
 
@@ -130,13 +132,19 @@ public class TinkerResourceIdTask extends DefaultTask {
      * add --stable-ids param to aaptOptions's additionalParameters
      */
     List<String> addStableIdsFileToAdditionalParameters(def processAndroidResourceTask) {
-        def aaptOptions = processAndroidResourceTask.getAaptOptions()
+        def aaptOptions
+        try {
+            aaptOptions = processAndroidResourceTask.getAaptOptions()
+        } catch (Exception e) {
+            //agp 3.5.0+
+            aaptOptions = Class.forName("com.android.build.gradle.internal.res.LinkApplicationAndroidResourcesTask").metaClass.getProperty(processAndroidResourceTask, "aaptOptions")
+        }
         List<String> additionalParameters = new ArrayList<>()
         List<String> originalAdditionalParameters = aaptOptions.getAdditionalParameters()
         if (originalAdditionalParameters != null) {
             additionalParameters.addAll(originalAdditionalParameters)
         }
-        aaptOptions.setAdditionalParameters(additionalParameters)
+        replaceFinalField(aaptOptions.getClass().getName(), "additionalParameters", aaptOptions, additionalParameters)
         additionalParameters.add("--stable-ids")
         additionalParameters.add(project.file(RESOURCE_PUBLIC_TXT).getAbsolutePath())
         project.logger.error("tinker add additionalParameters --stable-ids ${project.file(RESOURCE_PUBLIC_TXT).getAbsolutePath()}")
@@ -144,13 +152,49 @@ public class TinkerResourceIdTask extends DefaultTask {
     }
 
     /**
-     * get real name for style type resources in R.txt by values files
+     * replace final field
      */
-    Map<String, String> getStyles() {
-        Map<String, String> styles = new HashMap<>()
+    private static void replaceFinalField(String className, String fieldName, Object instance, Object fieldValue) {
+        final Class targetClazz = Class.forName(className)
+        Class currClazz = targetClazz
+        Field field = null
+        while (true) {
+            try {
+                field = currClazz.getDeclaredField(fieldName)
+                break
+            } catch (NoSuchFieldException e) {
+                if (currClazz.equals(Object.class)) {
+                    throw e
+                } else {
+                    currClazz = currClazz.getSuperclass()
+                }
+            }
+        }
+        Field modifiersField = Field.class.getDeclaredField("modifiers")
+        modifiersField.setAccessible(true)
+        modifiersField.setInt(field, field.getModifiers() & ~Modifier.FINAL)
+        field.setAccessible(true)
+        field.set(instance, fieldValue)
+    }
+
+    /**
+     * get real name for all resources in R.txt by values files
+     */
+    Map<String, String> getRealNameMap() {
+        Map<String, String> realNameMap = new HashMap<>()
         def mergeResourcesTask = project.tasks.findByName("merge${variantName.capitalize()}Resources")
         List<File> resDirCandidateList = new ArrayList<>()
-        resDirCandidateList.add(mergeResourcesTask.outputDir)
+        try {
+            def output = mergeResourcesTask.outputDir
+            if (output instanceof File) {
+                resDirCandidateList.add(output)
+            } else {
+                resDirCandidateList.add(output.getAsFile().get())
+            }
+        } catch (Exception ignore) {
+
+        }
+
         resDirCandidateList.add(new File(mergeResourcesTask.getIncrementalFolder(), "merged.dir"))
         resDirCandidateList.each {
             it.eachFileRecurse(FileType.FILES) {
@@ -164,15 +208,16 @@ public class TinkerResourceIdTask extends DefaultTask {
         }
         project.file(RESOURCE_VALUES_BACKUP).eachFileRecurse(FileType.FILES) {
             new XmlParser().parse(it).each {
-                if ("style".equalsIgnoreCase("${it.name()}")) {
-                    String originalStyle = "${it.@name}".toString()
-                    //replace . to _
-                    String sanitizeName = originalStyle.replaceAll("[.:]", "_");
-                    styles.put(sanitizeName, originalStyle)
+                String originalName = "${it.@name}".toString()
+                //replace . to _ for all types with the same converting rule
+                if (originalName.contains('.') || originalName.contains(':')) {
+                    // only record names with '.' or ':', for sake of memory
+                    String sanitizeName = originalName.replaceAll("[.:]", "_");
+                    realNameMap.put(sanitizeName, originalName)
                 }
             }
         }
-        return styles
+        return realNameMap
     }
 
     /**
@@ -180,25 +225,22 @@ public class TinkerResourceIdTask extends DefaultTask {
      */
     ArrayList<String> getSortedStableIds(Map<RDotTxtEntry.RType, Set<RDotTxtEntry>> rTypeResourceMap) {
         List<String> sortedLines = new ArrayList<>()
-        Map<String, String> styles = getStyles()
+        Map<String, String> realNameMap = getRealNameMap()
         rTypeResourceMap?.each { key, entries ->
             entries.each {
+                //the name in R.txt which has replaced . to _
+                //so we should get the original name for it
+                def name = realNameMap.get(it.name) ?: it.name
                 if (it.type == RDotTxtEntry.RType.STYLEABLE) {
                     //ignore styleable type, also public.xml ignore it.
                     return
-                } else if (it.type == RDotTxtEntry.RType.STYLE) {
-                    //the name in R.txt for style type which has replaced . to _
-                    //so we should get the original name for it
-                    sortedLines.add("${applicationId}:${it.type}/${styles.get(it.name)} = ${it.idValue}")
-                } else if (it.type == RDotTxtEntry.RType.DRAWABLE) {
+                } else {
+                    sortedLines.add("${applicationId}:${it.type}/${name} = ${it.idValue}")
+
                     //there is a special resource type for drawable which called nested resource.
                     //such as avd_hide_password and avd_show_password resource in support design sdk.
                     //the nested resource is start with $, such as $avd_hide_password__0 and $avd_hide_password__1
                     //but there is none nested resource in R.txt, so ignore it just now.
-                    sortedLines.add("${applicationId}:${it.type}/${it.name} = ${it.idValue}")
-                } else {
-                    //other resource type which format is packageName:resType/resName = resId
-                    sortedLines.add("${applicationId}:${it.type}/${it.name} = ${it.idValue}")
                 }
             }
         }

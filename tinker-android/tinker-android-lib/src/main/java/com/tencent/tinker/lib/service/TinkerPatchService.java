@@ -16,6 +16,7 @@
 
 package com.tencent.tinker.lib.service;
 
+import android.app.IntentService;
 import android.app.Notification;
 import android.app.Service;
 import android.content.Context;
@@ -26,7 +27,6 @@ import android.os.SystemClock;
 
 import com.tencent.tinker.lib.patch.AbstractPatch;
 import com.tencent.tinker.lib.tinker.Tinker;
-import com.tencent.tinker.lib.util.TinkerJobIntentService;
 import com.tencent.tinker.lib.util.TinkerLog;
 import com.tencent.tinker.loader.TinkerRuntimeException;
 import com.tencent.tinker.loader.shareutil.ShareConstants;
@@ -38,10 +38,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Created by zhangshaowen on 16/3/14.
  */
-public class TinkerPatchService extends TinkerJobIntentService {
+public class TinkerPatchService extends IntentService {
     private static final String TAG = "Tinker.TinkerPatchService";
-
-    private static final int JOB_ID = 0xf0f1f2f3;
 
     private static final String PATCH_PATH_EXTRA = "patch_path_extra";
     private static final String RESULT_CLASS_EXTRA = "patch_result_class";
@@ -50,13 +48,17 @@ public class TinkerPatchService extends TinkerJobIntentService {
     private static int notificationId = ShareConstants.TINKER_PATCH_SERVICE_NOTIFICATION;
     private static Class<? extends AbstractResultService> resultServiceClass = null;
 
+    public TinkerPatchService() {
+        super("TinkerPatchService");
+    }
+
     public static void runPatchService(final Context context, final String path) {
         TinkerLog.i(TAG, "run patch service...");
         Intent intent = new Intent(context, TinkerPatchService.class);
         intent.putExtra(PATCH_PATH_EXTRA, path);
         intent.putExtra(RESULT_CLASS_EXTRA, resultServiceClass.getName());
         try {
-            enqueueWork(context, TinkerPatchService.class, JOB_ID, intent);
+            context.startService(intent);
         } catch (Throwable thr) {
             TinkerLog.e(TAG, "run patch service fail, exception:" + thr);
         }
@@ -69,7 +71,7 @@ public class TinkerPatchService extends TinkerJobIntentService {
         try {
             Class.forName(serviceClass.getName());
         } catch (ClassNotFoundException e) {
-//            e.printStackTrace();
+            TinkerLog.printErrStackTrace(TAG, e, "patch processor class not found.");
         }
     }
 
@@ -85,6 +87,12 @@ public class TinkerPatchService extends TinkerJobIntentService {
             throw new TinkerRuntimeException("getPatchResultExtra, but intent is null");
         }
         return ShareIntentUtil.getStringExtra(intent, RESULT_CLASS_EXTRA);
+    }
+
+    @Override
+    protected void onHandleIntent(Intent intent) {
+        increasingPriority();
+        doApplyPatch(this, intent);
     }
 
     /**
@@ -137,8 +145,8 @@ public class TinkerPatchService extends TinkerJobIntentService {
         }
 
         cost = SystemClock.elapsedRealtime() - begin;
-        tinker.getPatchReporter().
-            onPatchResult(patchFile, result, cost);
+        tinker.getPatchReporter()
+                .onPatchResult(patchFile, result, cost);
 
         patchResult.isSuccess = result;
         patchResult.rawPatchFilePath = path;
@@ -148,12 +156,6 @@ public class TinkerPatchService extends TinkerJobIntentService {
         AbstractResultService.runResultService(context, patchResult, getPatchResultExtra(intent));
 
         sIsPatchApplying.set(false);
-    }
-
-    @Override
-    protected void onHandleWork(Intent intent) {
-        increasingPriority();
-        doApplyPatch(this, intent);
     }
 
     private void increasingPriority() {

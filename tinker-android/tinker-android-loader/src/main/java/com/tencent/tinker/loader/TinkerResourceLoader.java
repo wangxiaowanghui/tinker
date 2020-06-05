@@ -76,7 +76,6 @@ public class TinkerResourceLoader {
             ShareIntentUtil.setIntentReturnCode(intentResult, ShareConstants.ERROR_LOAD_PATCH_VERSION_RESOURCE_LOAD_EXCEPTION);
             return false;
         }
-
         return true;
     }
 

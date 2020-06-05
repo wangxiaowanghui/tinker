@@ -32,15 +32,25 @@ public class TinkerMultidexConfigTask extends DefaultTask {
                     "    <init>(...);\n" +
                     "    void onBaseContextAttached(android.content.Context);\n" +
                     "}\n" +
-                    "\n" +
-                    "-keep public class com.tencent.tinker.entry.ApplicationLifeCycle {\n" +
-                    "    *;\n" +
+                    "-keep public class * implements com.tencent.tinker.loader.app.ITinkerInlineFenceBridge {\n" +
+                    "    <init>(...);\n" +
+                    "    void attachBaseContext(com.tencent.tinker.loader.app.TinkerApplication, android.content.Context);\n" +
                     "}\n" +
-                    "\n" +
                     "-keep public class * extends com.tencent.tinker.loader.TinkerLoader {\n" +
                     "    <init>(...);\n" +
                     "}\n" +
-                    "\n" +
+                    "-keep public class com.tencent.tinker.loader.NewClassLoaderInjector {\n" +
+                    "    *;\n" +
+                    "}\n" +
+                    "-keep class com.tencent.tinker.loader.NewClassLoaderInjector\$DispatchClassLoader {\n" +
+                    "    *;\n" +
+                    "}\n" +
+                    "-keep class com.tencent.tinker.entry.TinkerApplicationInlineFence {\n" +
+                    "    *;\n" +
+                    "}\n" +
+                    "-keep class com.tencent.tinker.loader.app.TinkerInlineFenceAction {\n" +
+                    "    *;\n" +
+                    "}\n" +
                     "-keep public class * extends android.app.Application {\n" +
                     "     <init>();\n" +
                     "     void attachBaseContext(android.content.Context);\n" +
@@ -48,6 +58,7 @@ public class TinkerMultidexConfigTask extends DefaultTask {
 
 
     def applicationVariant
+    def multiDexKeepProguard
 
     public TinkerMultidexConfigTask() {
         group = 'tinker'
@@ -89,8 +100,6 @@ public class TinkerMultidexConfigTask extends DefaultTask {
                     .append("\n")
         }
 
-
-
         // Write our recommended proguard settings to this file
         FileWriter fr = new FileWriter(file.path)
         try {
@@ -101,30 +110,6 @@ public class TinkerMultidexConfigTask extends DefaultTask {
             fr.close()
         }
 
-        File multiDexKeepProguard = null
-        try {
-            multiDexKeepProguard = applicationVariant.getVariantData().getScope().getManifestKeepListProguardFile()
-        } catch (Throwable ignore) {
-            try {
-                def buildableArtifact = applicationVariant.getVariantData().getScope().getArtifacts().getFinalArtifactFiles(
-                        Class.forName("com.android.build.gradle.internal.scope.InternalArtifactType")
-                                .getDeclaredField("LEGACY_MULTIDEX_AAPT_DERIVED_PROGUARD_RULES")
-                                .get(null)
-                )
-
-                //noinspection GroovyUncheckedAssignmentOfMemberOfRawType,UnnecessaryQualifiedReference
-                multiDexKeepProguard = com.google.common.collect.Iterators.getOnlyElement(buildableArtifact.iterator())
-            } catch (Throwable e) {
-
-            }
-            if (multiDexKeepProguard == null) {
-                try {
-                    multiDexKeepProguard = applicationVariant.getVariantData().getScope().getManifestKeepListFile()
-                } catch (Throwable e) {
-                    project.logger.error("can't find getManifestKeepListFile method, exception:${e}")
-                }
-            }
-        }
         if (multiDexKeepProguard == null) {
             project.logger.error("auto add multidex keep pattern fail, you can only copy ${file} to your own multiDex keep proguard file yourself.")
             return

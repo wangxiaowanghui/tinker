@@ -10,14 +10,20 @@ android {
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
+
+        consumerProguardFiles file('../consumer-proguard.txt')
+    }
+
+    lintOptions {
+        disable 'LongLogTag'
     }
 }
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     testImplementation 'junit:junit:4.12'
-    implementation "com.android.support:support-annotations:${rootProject.ext.supportLibVersion}"
-    implementation project(':tinker-android:tinker-android-loader')
+    implementation project(':tinker-android:tinker-android-anno-support')
+    api project(':tinker-android:tinker-android-loader')
     api project(':tinker-commons')
 }
 

@@ -19,7 +19,7 @@ package com.tencent.tinker.lib.util;
 import android.content.Context;
 import android.content.Intent;
 
-import com.tencent.tinker.commons.util.StreamUtil;
+import com.tencent.tinker.commons.util.IOHelper;
 import com.tencent.tinker.lib.service.TinkerPatchService;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.tinker.TinkerInstaller;
@@ -46,7 +46,7 @@ public class UpgradePatchRetry {
 
     private static final String RETRY_FILE_MD5_PROPERTY = "md5";
     private static final String RETRY_COUNT_PROPERTY    = "times";
-    private static final int    RETRY_MAX_COUNT         = 5;
+    private static final int    RETRY_MAX_COUNT         = 20;
     private static UpgradePatchRetry sInstance;
     private boolean isRetryEnable = true;
     private File    retryInfoFile = null;
@@ -267,7 +267,7 @@ public class UpgradePatchRetry {
             } catch (IOException e) {
                 TinkerLog.e(TAG, "fail to readRetryProperty:" + e);
             } finally {
-                StreamUtil.closeQuietly(inputStream);
+                IOHelper.closeQuietly(inputStream);
             }
 
             return new RetryInfo(md5, times);
@@ -291,10 +291,9 @@ public class UpgradePatchRetry {
                 outputStream = new FileOutputStream(infoFile, false);
                 newProperties.store(outputStream, null);
             } catch (Exception e) {
-//                e.printStackTrace();
                 TinkerLog.printErrStackTrace(TAG, e, "retry write property fail");
             } finally {
-                StreamUtil.closeQuietly(outputStream);
+                IOHelper.closeQuietly(outputStream);
             }
 
         }

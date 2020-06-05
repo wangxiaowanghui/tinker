@@ -22,6 +22,7 @@ import android.os.Build;
 import com.tencent.tinker.lib.service.PatchResult;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.util.TinkerLog;
+import com.tencent.tinker.lib.util.UpgradePatchRetry;
 import com.tencent.tinker.loader.shareutil.ShareConstants;
 import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
 import com.tencent.tinker.loader.shareutil.SharePatchInfo;
@@ -30,6 +31,7 @@ import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Map;
 
 
 /**
@@ -80,6 +82,15 @@ public class UpgradePatch extends AbstractPatch {
         File patchInfoLockFile = SharePatchFileUtil.getPatchInfoLockFile(patchDirectory);
         File patchInfoFile = SharePatchFileUtil.getPatchInfoFile(patchDirectory);
 
+        final Map<String, String> pkgProps = signatureCheck.getPackagePropertiesIfPresent();
+        if (pkgProps == null) {
+            TinkerLog.e(TAG, "UpgradePatch packageProperties is null, do we process a valid patch apk ?");
+            return false;
+        }
+
+        final String isProtectedAppStr = pkgProps.get(ShareConstants.PKGMETA_KEY_IS_PROTECTED_APP);
+        final boolean isProtectedApp = (isProtectedAppStr != null && !isProtectedAppStr.isEmpty() && !"0".equals(isProtectedAppStr));
+
         SharePatchInfo oldInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
 
         //it is a new patch, so we should not find a exist
@@ -98,17 +109,28 @@ public class UpgradePatch extends AbstractPatch {
                 manager.getPatchReporter().onPatchVersionCheckFail(patchFile, oldInfo, patchMd5);
                 return false;
             }
+
+            final boolean usingInterpret = oldInfo.oatDir.equals(ShareConstants.INTERPRET_DEX_OPTIMIZE_PATH);
+
+            if (!usingInterpret && !ShareTinkerInternals.isNullOrNil(oldInfo.newVersion) && oldInfo.newVersion.equals(patchMd5) && !oldInfo.isRemoveNewVersion) {
+                TinkerLog.e(TAG, "patch already applied, md5: %s", patchMd5);
+
+                // Reset patch apply retry count to let us be able to reapply without triggering
+                // patch apply disable when we apply it successfully previously.
+                UpgradePatchRetry.getInstance(context).onPatchResetMaxCheck(patchMd5);
+
+                return true;
+            }
             // if it is interpret now, use changing flag to wait main process
-            final String finalOatDir = oldInfo.oatDir.equals(ShareConstants.INTERPRET_DEX_OPTIMIZE_PATH)
-                ? ShareConstants.CHANING_DEX_OPTIMIZE_PATH : oldInfo.oatDir;
-            newInfo = new SharePatchInfo(oldInfo.oldVersion, patchMd5, false, Build.FINGERPRINT, finalOatDir);
+            final String finalOatDir = usingInterpret ? ShareConstants.CHANING_DEX_OPTIMIZE_PATH : oldInfo.oatDir;
+            newInfo = new SharePatchInfo(oldInfo.oldVersion, patchMd5, isProtectedApp, false, Build.FINGERPRINT, finalOatDir, false);
         } else {
-            newInfo = new SharePatchInfo("", patchMd5, false, Build.FINGERPRINT, ShareConstants.DEFAULT_DEX_OPTIMIZE_PATH);
+            newInfo = new SharePatchInfo("", patchMd5, isProtectedApp, false, Build.FINGERPRINT, ShareConstants.DEFAULT_DEX_OPTIMIZE_PATH, false);
         }
 
-        //it is a new patch, we first delete if there is any files
-        //don't delete dir for faster retry
-//        SharePatchFileUtil.deleteDir(patchVersionDirectory);
+        // it is a new patch, we first delete if there is any files
+        // don't delete dir for faster retry
+        // SharePatchFileUtil.deleteDir(patchVersionDirectory);
         final String patchName = SharePatchFileUtil.getPatchVersionDirectory(patchMd5);
 
         final String patchVersionDirectory = patchDirectory + "/" + patchName;
@@ -126,7 +148,6 @@ public class UpgradePatch extends AbstractPatch {
                     destPatchFile.getAbsolutePath(), destPatchFile.length());
             }
         } catch (IOException e) {
-//            e.printStackTrace();
             TinkerLog.e(TAG, "UpgradePatch tryPatch:copy patch file fail from %s to %s", patchFile.getPath(), destPatchFile.getPath());
             manager.getPatchReporter().onPatchTypeExtractFail(patchFile, destPatchFile, patchFile.getName(), ShareConstants.TYPE_PATCH_FILE);
             return false;
@@ -135,6 +156,11 @@ public class UpgradePatch extends AbstractPatch {
         //we use destPatchFile instead of patchFile, because patchFile may be deleted during the patch process
         if (!DexDiffPatchInternal.tryRecoverDexFiles(manager, signatureCheck, context, patchVersionDirectory, destPatchFile)) {
             TinkerLog.e(TAG, "UpgradePatch tryPatch:new patch recover, try patch dex failed");
+            return false;
+        }
+
+        if (!ArkHotDiffPatchInternal.tryRecoverArkHotLibrary(manager, signatureCheck,
+                context, patchVersionDirectory, destPatchFile)) {
             return false;
         }
 
@@ -159,6 +185,10 @@ public class UpgradePatch extends AbstractPatch {
             manager.getPatchReporter().onPatchInfoCorrupted(patchFile, newInfo.oldVersion, newInfo.newVersion);
             return false;
         }
+
+        // Reset patch apply retry count to let us be able to reapply without triggering
+        // patch apply disable when we apply it successfully previously.
+        UpgradePatchRetry.getInstance(context).onPatchResetMaxCheck(patchMd5);
 
         TinkerLog.w(TAG, "UpgradePatch tryPatch: done, it is ok");
         return true;
