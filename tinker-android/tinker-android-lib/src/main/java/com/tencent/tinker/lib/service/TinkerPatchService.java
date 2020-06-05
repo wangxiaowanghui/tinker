@@ -16,103 +16,52 @@
 
 package com.tencent.tinker.lib.service;
 
-import android.annotation.TargetApi;
 import android.app.IntentService;
 import android.app.Notification;
 import android.app.Service;
-import android.app.job.JobInfo;
-import android.app.job.JobParameters;
-import android.app.job.JobScheduler;
-import android.app.job.JobService;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.os.AsyncTask;
 import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
-import android.os.PersistableBundle;
 import android.os.SystemClock;
-import android.support.annotation.Nullable;
 
 import com.tencent.tinker.lib.patch.AbstractPatch;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.util.TinkerLog;
-import com.tencent.tinker.lib.util.TinkerServiceInternals;
 import com.tencent.tinker.loader.TinkerRuntimeException;
 import com.tencent.tinker.loader.shareutil.ShareConstants;
 import com.tencent.tinker.loader.shareutil.ShareIntentUtil;
 
 import java.io.File;
-import java.lang.ref.WeakReference;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Created by zhangshaowen on 16/3/14.
  */
-public class TinkerPatchService {
+public class TinkerPatchService extends IntentService {
     private static final String TAG = "Tinker.TinkerPatchService";
 
     private static final String PATCH_PATH_EXTRA = "patch_path_extra";
     private static final String RESULT_CLASS_EXTRA = "patch_result_class";
-    private static final int MIN_SDKVER_TO_USE_JOBSCHEDULER = 26;
 
     private static AbstractPatch upgradePatchProcessor = null;
     private static int notificationId = ShareConstants.TINKER_PATCH_SERVICE_NOTIFICATION;
     private static Class<? extends AbstractResultService> resultServiceClass = null;
-    private static Handler mHandler = new Handler(Looper.getMainLooper());
+
+    public TinkerPatchService() {
+        super("TinkerPatchService");
+    }
 
     public static void runPatchService(final Context context, final String path) {
-        try {
-            if (Build.VERSION.SDK_INT < MIN_SDKVER_TO_USE_JOBSCHEDULER) {
-                runPatchServiceByIntentService(context, path);
-            } else {
-                if (!runPatchServiceByJobScheduler(context, path)) {
-                    TinkerLog.e(TAG, "start patch job service fail, try to fallback to intent service.");
-                    mHandler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            // This method will tell us whether the intent service or the job scheduler
-                            // is running.
-                            TinkerLog.i(TAG, "fallback: prepare trying to run patch service by intent service.");
-                            if (!TinkerServiceInternals.isTinkerPatchServiceRunning(context)) {
-                                runPatchServiceByIntentService(context, path);
-                            }
-                        }
-                    }, TimeUnit.SECONDS.toMillis(3));
-                }
-            }
-        } catch (Throwable throwable) {
-            TinkerLog.e(TAG, "start patch service fail, exception:" + throwable);
-        }
-    }
-
-    private static void runPatchServiceByIntentService(Context context, String path) {
-        TinkerLog.i(TAG, "run patch service by intent service.");
-        Intent intent = new Intent(context, IntentServiceRunner.class);
+        TinkerLog.i(TAG, "run patch service...");
+        Intent intent = new Intent(context, TinkerPatchService.class);
         intent.putExtra(PATCH_PATH_EXTRA, path);
         intent.putExtra(RESULT_CLASS_EXTRA, resultServiceClass.getName());
-        context.startService(intent);
-    }
-
-    @TargetApi(21)
-    private static boolean runPatchServiceByJobScheduler(Context context, String path) {
-        TinkerLog.i(TAG, "run patch service by job scheduler.");
-        final JobInfo.Builder jobInfoBuilder = new JobInfo.Builder(
-                1, new ComponentName(context, JobServiceRunner.class)
-        );
-        final PersistableBundle extras = new PersistableBundle();
-        extras.putString(PATCH_PATH_EXTRA, path);
-        extras.putString(RESULT_CLASS_EXTRA, resultServiceClass.getName());
-        jobInfoBuilder.setExtras(extras);
-        jobInfoBuilder.setOverrideDeadline(5);
-        final JobScheduler jobScheduler = (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-        if (jobScheduler == null) {
-            TinkerLog.e(TAG, "jobScheduler is null.");
-            return false;
+        try {
+            context.startService(intent);
+        } catch (Throwable thr) {
+            TinkerLog.e(TAG, "run patch service fail, exception:" + thr);
         }
-        return (jobScheduler.schedule(jobInfoBuilder.build()) == JobScheduler.RESULT_SUCCESS);
     }
 
     public static void setPatchProcessor(AbstractPatch upgradePatch, Class<? extends AbstractResultService> serviceClass) {
@@ -122,7 +71,7 @@ public class TinkerPatchService {
         try {
             Class.forName(serviceClass.getName());
         } catch (ClassNotFoundException e) {
-//            e.printStackTrace();
+            TinkerLog.printErrStackTrace(TAG, e, "patch processor class not found.");
         }
     }
 
@@ -140,12 +89,10 @@ public class TinkerPatchService {
         return ShareIntentUtil.getStringExtra(intent, RESULT_CLASS_EXTRA);
     }
 
-    public static Class<? extends Service> getRealRunnerClass() {
-        if (Build.VERSION.SDK_INT < MIN_SDKVER_TO_USE_JOBSCHEDULER) {
-            return IntentServiceRunner.class;
-        } else {
-            return JobServiceRunner.class;
-        }
+    @Override
+    protected void onHandleIntent(Intent intent) {
+        increasingPriority();
+        doApplyPatch(this, intent);
     }
 
     /**
@@ -156,7 +103,16 @@ public class TinkerPatchService {
         notificationId = id;
     }
 
+    private static AtomicBoolean sIsPatchApplying = new AtomicBoolean(false);
+
     private static void doApplyPatch(Context context, Intent intent) {
+        // Since we may retry with IntentService, we should prevent
+        // racing here again.
+        if (!sIsPatchApplying.compareAndSet(false, true)) {
+            TinkerLog.w(TAG, "TinkerPatchService doApplyPatch is running by another runner.");
+            return;
+        }
+
         Tinker tinker = Tinker.with(context);
         tinker.getPatchReporter().onPatchServiceStart(intent);
 
@@ -189,8 +145,8 @@ public class TinkerPatchService {
         }
 
         cost = SystemClock.elapsedRealtime() - begin;
-        tinker.getPatchReporter().
-            onPatchResult(patchFile, result, cost);
+        tinker.getPatchReporter()
+                .onPatchResult(patchFile, result, cost);
 
         patchResult.isSuccess = result;
         patchResult.rawPatchFilePath = path;
@@ -198,133 +154,62 @@ public class TinkerPatchService {
         patchResult.e = e;
 
         AbstractResultService.runResultService(context, patchResult, getPatchResultExtra(intent));
+
+        sIsPatchApplying.set(false);
     }
 
-    public static class IntentServiceRunner extends IntentService {
-
-        public IntentServiceRunner() {
-            super("TinkerPatchService");
+    private void increasingPriority() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            TinkerLog.i(TAG, "for system version >= Android O, we just ignore increasingPriority "
+                    + "job to avoid crash or toasts.");
+            return;
         }
 
+        if ("ZUK".equals(Build.MANUFACTURER)) {
+            TinkerLog.i(TAG, "for ZUK device, we just ignore increasingPriority "
+                    + "job to avoid crash.");
+            return;
+        }
+
+        TinkerLog.i(TAG, "try to increase patch process priority");
+        try {
+            Notification notification = new Notification();
+            if (Build.VERSION.SDK_INT < 18) {
+                startForeground(notificationId, notification);
+            } else {
+                startForeground(notificationId, notification);
+                // start InnerService
+                startService(new Intent(this, InnerService.class));
+            }
+        } catch (Throwable e) {
+            TinkerLog.i(TAG, "try to increase patch process priority error:" + e);
+        }
+    }
+
+    /**
+     * I don't want to do this, believe me
+     */
+    public static class InnerService extends Service {
         @Override
-        protected void onHandleIntent(@Nullable Intent intent) {
-            increasingPriority();
-            doApplyPatch(getApplicationContext(), intent);
-        }
-
-        private void increasingPriority() {
-//        if (Build.VERSION.SDK_INT > 24) {
-//            TinkerLog.i(TAG, "for Android 7.1, we just ignore increasingPriority job");
-//            return;
-//        }
-            if (Build.VERSION.SDK_INT >= 26) {
-                TinkerLog.i(TAG, "for system version >= Android O, we just ignore increasingPriority "
-                        + "job to avoid crash or toasts.");
-                return;
-            }
-
-            if ("ZUK".equals(Build.MANUFACTURER)) {
-                TinkerLog.i(TAG, "for ZUK device, we just ignore increasingPriority "
-                        + "job to avoid crash.");
-                return;
-            }
-
-            TinkerLog.i(TAG, "try to increase patch process priority");
+        public void onCreate() {
+            super.onCreate();
             try {
-                Notification notification = new Notification();
-                if (Build.VERSION.SDK_INT < 18) {
-                    startForeground(notificationId, notification);
-                } else {
-                    startForeground(notificationId, notification);
-                    // start InnerService
-                    startService(new Intent(this, InnerService.class));
-                }
+                startForeground(notificationId, new Notification());
             } catch (Throwable e) {
-                TinkerLog.i(TAG, "try to increase patch process priority error:" + e);
+                TinkerLog.e(TAG, "InnerService set service for push exception:%s.", e);
             }
-        }
-
-        /**
-         * I don't want to do this, believe me
-         */
-        //InnerService
-        public static class InnerService extends Service {
-            @Override
-            public void onCreate() {
-                super.onCreate();
-                try {
-                    startForeground(notificationId, new Notification());
-                } catch (Throwable e) {
-                    TinkerLog.e(TAG, "InnerService set service for push exception:%s.", e);
-                }
-                // kill
-                stopSelf();
-            }
-
-            @Override
-            public void onDestroy() {
-                stopForeground(true);
-                super.onDestroy();
-            }
-
-            @Override
-            public IBinder onBind(Intent intent) {
-                return null;
-            }
-        }
-    }
-
-    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
-    public static class JobServiceRunner extends JobService {
-        private JobAsyncTask mTask = null;
-
-        @Override
-        public boolean onStartJob(JobParameters params) {
-            mTask = new JobAsyncTask(this);
-            mTask.execute(params);
-            return true;
+            stopSelf();
         }
 
         @Override
-        public boolean onStopJob(JobParameters params) {
-            TinkerLog.w(TAG, "Stopping TinkerPatchJob service.");
-            if (mTask != null) {
-                mTask.cancel(true);
-                mTask = null;
-            }
-            return false;
+        public void onDestroy() {
+            stopForeground(true);
+            super.onDestroy();
         }
 
-        private static class JobAsyncTask extends AsyncTask<JobParameters, Void, Void> {
-            private final WeakReference<JobService> mHolderRef;
-
-            JobAsyncTask(JobService holder) {
-                mHolderRef = new WeakReference<>(holder);
-            }
-
-            @Override
-            protected Void doInBackground(JobParameters... paramsList) {
-                final JobParameters params = paramsList[0];
-                final PersistableBundle extras = params.getExtras();
-                final Intent paramIntent = new Intent();
-                paramIntent.putExtra(PATCH_PATH_EXTRA, extras.getString(PATCH_PATH_EXTRA));
-                paramIntent.putExtra(RESULT_CLASS_EXTRA, extras.getString(RESULT_CLASS_EXTRA));
-                final JobService holder = mHolderRef.get();
-                if (holder == null) {
-                    TinkerLog.e(TAG, "unexpected case: holder job service is null.");
-                    return null;
-                }
-                doApplyPatch(holder.getApplicationContext(), paramIntent);
-                notifyFinished(params);
-                return null;
-            }
-
-            private void notifyFinished(JobParameters params) {
-                final JobService holder = mHolderRef.get();
-                if (holder != null) {
-                    holder.jobFinished(params, false);
-                }
-            }
+        @Override
+        public IBinder onBind(Intent intent) {
+            return null;
         }
     }
 }

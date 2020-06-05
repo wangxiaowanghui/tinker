@@ -22,7 +22,8 @@ import android.os.Build;
 import android.os.SystemClock;
 
 import com.tencent.tinker.commons.dexpatcher.DexPatchApplier;
-import com.tencent.tinker.commons.util.StreamUtil;
+import com.tencent.tinker.commons.util.DigestUtil;
+import com.tencent.tinker.commons.util.IOHelper;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.util.TinkerLog;
 import com.tencent.tinker.loader.TinkerDexOptimizer;
@@ -33,14 +34,12 @@ import com.tencent.tinker.loader.shareutil.ShareElfFile;
 import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
 import com.tencent.tinker.loader.shareutil.ShareSecurityCheck;
 import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
-import com.tencent.tinker.ziputils.ziputil.TinkerZipEntry;
-import com.tencent.tinker.ziputils.ziputil.TinkerZipFile;
-import com.tencent.tinker.ziputils.ziputil.TinkerZipOutputStream;
-import com.tencent.tinker.ziputils.ziputil.TinkerZipUtil;
+import com.tencent.tinker.ziputils.ziputil.AlignedZipOutputStream;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -110,11 +109,11 @@ public class DexDiffPatchInternal extends BasePatchInternal {
             }
         }
         List<File> failDexFiles = new ArrayList<>();
-        // check again, if still can be found, just return
+        // check again, if still can't be found, just return
         for (File file : optFiles) {
             TinkerLog.i(TAG, "check dex optimizer file exist: %s, size %d", file.getPath(), file.length());
 
-            if (!SharePatchFileUtil.isLegalFile(file)) {
+            if (!SharePatchFileUtil.isLegalFile(file) && !SharePatchFileUtil.shouldAcceptEvenIfIllegal(file)) {
                 TinkerLog.e(TAG, "final parallel dex optimizer file %s is not exist, return false", file.getName());
                 failDexFiles.add(file);
             }
@@ -127,6 +126,9 @@ public class DexDiffPatchInternal extends BasePatchInternal {
         if (Build.VERSION.SDK_INT >= 21) {
             Throwable lastThrowable = null;
             for (File file : optFiles) {
+                if (SharePatchFileUtil.shouldAcceptEvenIfIllegal(file)) {
+                    continue;
+                }
                 TinkerLog.i(TAG, "check dex optimizer file format: %s, size %d", file.getName(), file.length());
                 int returnType;
                 try {
@@ -144,7 +146,7 @@ public class DexDiffPatchInternal extends BasePatchInternal {
                         failDexFiles.add(file);
                         lastThrowable = e;
                     } finally {
-                        StreamUtil.closeQuietly(elfFile);
+                        IOHelper.closeQuietly(elfFile);
                     }
                 }
             }
@@ -172,14 +174,21 @@ public class DexDiffPatchInternal extends BasePatchInternal {
         File dexFiles = new File(dir);
         File[] files = dexFiles.listFiles();
         List<File> legalFiles = new ArrayList<>();
-        // may have directory in android o
         if (files != null) {
             for (File file : files) {
-                if (file.isFile()) {
+                final String fileName = file.getName();
+                // may have directory in android o
+                if (file.isFile()
+                    &&  (fileName.endsWith(ShareConstants.DEX_SUFFIX)
+                      || fileName.endsWith(ShareConstants.JAR_SUFFIX)
+                      || fileName.endsWith(ShareConstants.PATCH_SUFFIX))
+                ) {
                     legalFiles.add(file);
                 }
             }
         }
+
+        TinkerLog.i(TAG, "legal files to do dexopt: " + legalFiles);
 
         final String optimizeDexDirectory = patchVersionDirectory + "/" + DEX_OPTIMIZE_PATH + "/";
         return dexOptimizeDexFiles(context, legalFiles, optimizeDexDirectory, patchFile);
@@ -236,6 +245,15 @@ public class DexDiffPatchInternal extends BasePatchInternal {
         return result;
     }
 
+    private static ZipEntry makeStoredZipEntry(ZipEntry originalEntry, String realDexName) {
+        final ZipEntry result = new ZipEntry(realDexName);
+        result.setMethod(ZipEntry.STORED);
+        result.setCompressedSize(originalEntry.getSize());
+        result.setSize(originalEntry.getSize());
+        result.setCrc(originalEntry.getCrc());
+        return result;
+    }
+
     private static boolean mergeClassNDexFiles(final Context context, final File patchFile, final String dexFilePath) {
         // only merge for art vm
         if (patchList.isEmpty() || !isVmArt) {
@@ -251,36 +269,55 @@ public class DexDiffPatchInternal extends BasePatchInternal {
         }
         long start = System.currentTimeMillis();
         boolean result = true;
-        TinkerZipOutputStream out = null;
+        AlignedZipOutputStream out = null;
         try {
-            out = new TinkerZipOutputStream(new BufferedOutputStream(new FileOutputStream(classNFile)));
+            out = new AlignedZipOutputStream(new BufferedOutputStream(new FileOutputStream(classNFile)));
             for (ShareDexDiffPatchInfo info : classNDexInfo.keySet()) {
                 File dexFile = classNDexInfo.get(info);
-
                 if (info.isJarMode) {
-                    TinkerZipFile dexZipFile = null;
+                    ZipFile dexZipFile = null;
                     InputStream inputStream = null;
                     try {
-                        dexZipFile = new TinkerZipFile(dexFile);
-                        TinkerZipEntry rawDexZipEntry = dexZipFile.getEntry(ShareConstants.DEX_IN_JAR);
-                        TinkerZipEntry newDexZipEntry = new TinkerZipEntry(rawDexZipEntry, info.rawName);
+                        dexZipFile = new ZipFile(dexFile);
+                        ZipEntry rawDexZipEntry = dexZipFile.getEntry(ShareConstants.DEX_IN_JAR);
+                        ZipEntry newDexZipEntry = makeStoredZipEntry(rawDexZipEntry, info.rawName);
                         inputStream = dexZipFile.getInputStream(rawDexZipEntry);
-                        TinkerZipUtil.extractTinkerEntry(newDexZipEntry, inputStream, out);
+                        try {
+                            out.putNextEntry(newDexZipEntry);
+                            IOHelper.copyStream(inputStream, out);
+                        } finally {
+                            out.closeEntry();
+                        }
                     } finally {
-                        StreamUtil.closeQuietly(inputStream);
-                        StreamUtil.closeQuietly(dexZipFile);
+                        IOHelper.closeQuietly(inputStream);
+                        IOHelper.closeQuietly(dexZipFile);
                     }
                 } else {
-                    TinkerZipEntry dexZipEntry = new TinkerZipEntry(info.rawName);
-                    TinkerZipUtil.extractLargeModifyFile(dexZipEntry, dexFile, Long.parseLong(info.newOrPatchedDexCrC), out);
-                }
+                    ZipEntry newDexZipEntry = new ZipEntry(info.rawName);
+                    newDexZipEntry.setMethod(ZipEntry.STORED);
+                    newDexZipEntry.setCompressedSize(dexFile.length());
+                    newDexZipEntry.setSize(dexFile.length());
+                    newDexZipEntry.setCrc(DigestUtil.getCRC32(dexFile));
 
+                    InputStream is = null;
+                    try {
+                        is = new BufferedInputStream(new FileInputStream(dexFile));
+                        try {
+                            out.putNextEntry(newDexZipEntry);
+                            IOHelper.copyStream(is, out);
+                        } finally {
+                            out.closeEntry();
+                        }
+                    } finally {
+                        IOHelper.closeQuietly(is);
+                    }
+                }
             }
         } catch (Throwable throwable) {
             TinkerLog.printErrStackTrace(TAG, throwable, "merge classN file");
             result = false;
         } finally {
-            StreamUtil.closeQuietly(out);
+            IOHelper.closeQuietly(out);
         }
 
         if (result) {
@@ -332,7 +369,7 @@ public class DexDiffPatchInternal extends BasePatchInternal {
 
             // try parallel dex optimizer
             TinkerDexOptimizer.optimizeAll(
-                    dexFiles, optimizeDexDirectoryFile,
+                context, dexFiles, optimizeDexDirectoryFile,
                 new TinkerDexOptimizer.ResultCallback() {
                     long startTime;
 
@@ -378,6 +415,9 @@ public class DexDiffPatchInternal extends BasePatchInternal {
     private static boolean checkAllDexOptFile(ArrayList<File> files, int count) {
         for (File file : files) {
             if (!SharePatchFileUtil.isLegalFile(file)) {
+                if (SharePatchFileUtil.shouldAcceptEvenIfIllegal(file)) {
+                    continue;
+                }
                 TinkerLog.e(TAG, "parallel dex optimizer file %s is not exist, just wait %d times", file.getName(), count);
                 return false;
             }
@@ -592,8 +632,8 @@ public class DexDiffPatchInternal extends BasePatchInternal {
                 }
                 zos.closeEntry();
             } finally {
-                StreamUtil.closeQuietly(bis);
-                StreamUtil.closeQuietly(zos);
+                IOHelper.closeQuietly(bis);
+                IOHelper.closeQuietly(zos);
             }
 
             isExtractionSuccessful = SharePatchFileUtil.verifyDexFileMd5(extractTo, targetMd5);
@@ -609,15 +649,15 @@ public class DexDiffPatchInternal extends BasePatchInternal {
         return isExtractionSuccessful;
     }
 
-//    /**
-//     * reject dalvik vm, but sdk version is larger than 21
-//     */
-//    private static void checkVmArtProperty() {
-//        boolean art = ShareTinkerInternals.isVmArt();
-//        if (!art && Build.VERSION.SDK_INT >= 21) {
-//            throw new TinkerRuntimeException(ShareConstants.CHECK_VM_PROPERTY_FAIL + ", it is dalvik vm, but sdk version " + Build.VERSION.SDK_INT + " is larger than 21!");
-//        }
-//    }
+    // /**
+    //  * reject dalvik vm, but sdk version is larger than 21
+    //  */
+    // private static void checkVmArtProperty() {
+    //     boolean art = ShareTinkerInternals.isVmArt();
+    //     if (!art && Build.VERSION.SDK_INT >= 21) {
+    //         throw new TinkerRuntimeException(ShareConstants.CHECK_VM_PROPERTY_FAIL + ", it is dalvik vm, but sdk version " + Build.VERSION.SDK_INT + " is larger than 21!");
+    //     }
+    // }
 
     private static boolean extractDexFile(ZipFile zipFile, ZipEntry entryFile, File extractTo, ShareDexDiffPatchInfo dexInfo) throws IOException {
         final String fileMd5 = isVmArt ? dexInfo.destMd5InArt : dexInfo.destMd5InDvm;
@@ -672,21 +712,21 @@ public class DexDiffPatchInternal extends BasePatchInternal {
                             }
                             new DexPatchApplier(zis, patchFileStream).executeAndSaveTo(zos);
                         } finally {
-                            StreamUtil.closeQuietly(zis);
+                            IOHelper.closeQuietly(zis);
                         }
                     } else {
                         new DexPatchApplier(oldDexStream, patchFileStream).executeAndSaveTo(zos);
                     }
                     zos.closeEntry();
                 } finally {
-                    StreamUtil.closeQuietly(zos);
+                    IOHelper.closeQuietly(zos);
                 }
             } else {
                 new DexPatchApplier(oldDexStream, patchFileStream).executeAndSaveTo(patchedDexFile);
             }
         } finally {
-            StreamUtil.closeQuietly(oldDexStream);
-            StreamUtil.closeQuietly(patchFileStream);
+            IOHelper.closeQuietly(oldDexStream);
+            IOHelper.closeQuietly(patchFileStream);
         }
     }
 

@@ -21,7 +21,7 @@ import android.content.pm.ApplicationInfo;
 import android.os.SystemClock;
 
 import com.tencent.tinker.bsdiff.BSPatch;
-import com.tencent.tinker.commons.util.StreamUtil;
+import com.tencent.tinker.commons.util.IOHelper;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.util.TinkerLog;
 import com.tencent.tinker.loader.TinkerRuntimeException;
@@ -65,7 +65,7 @@ public class BsDiffPatchInternal extends BasePatchInternal {
 
     private static boolean patchLibraryExtractViaBsDiff(Context context, String patchVersionDirectory, String meta, File patchFile) {
         String dir = patchVersionDirectory + "/" + SO_PATH + "/";
-        return extractBsDiffInternals(context, dir, meta, patchFile, TYPE_Library);
+        return extractBsDiffInternals(context, dir, meta, patchFile, TYPE_LIBRARY);
     }
 
     private static boolean extractBsDiffInternals(Context context, String dir, String meta, File patchFile, int type) {
@@ -183,8 +183,8 @@ public class BsDiffPatchInternal extends BasePatchInternal {
                         newStream = patch.getInputStream(patchFileEntry);
                         BSPatch.patchFast(oldStream, newStream, extractedFile);
                     } finally {
-                        StreamUtil.closeQuietly(oldStream);
-                        StreamUtil.closeQuietly(newStream);
+                        IOHelper.closeQuietly(oldStream);
+                        IOHelper.closeQuietly(newStream);
                     }
 
                     //go go go bsdiff get the
@@ -200,7 +200,6 @@ public class BsDiffPatchInternal extends BasePatchInternal {
             }
 
         } catch (Throwable e) {
-//            e.printStackTrace();
             throw new TinkerRuntimeException("patch " + ShareTinkerInternals.getTypeString(type) + " extract failed (" + e.getMessage() + ").", e);
         } finally {
             SharePatchFileUtil.closeZip(apk);

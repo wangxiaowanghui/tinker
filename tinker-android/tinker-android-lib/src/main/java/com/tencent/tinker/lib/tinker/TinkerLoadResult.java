@@ -113,7 +113,8 @@ public class TinkerLoadResult {
                 resourceDirectory = new File(patchVersionDirectory, ShareConstants.RES_PATH);
                 resourceFile = new File(resourceDirectory, ShareConstants.RES_NAME);
             }
-            patchInfo = new SharePatchInfo(oldVersion, newVersion, Build.FINGERPRINT, oatDir);
+            final boolean isProtectedApp = ShareIntentUtil.getBooleanExtra(intentResult, ShareIntentUtil.INTENT_IS_PROTECTED_APP, false);
+            patchInfo = new SharePatchInfo(oldVersion, newVersion, isProtectedApp, false, Build.FINGERPRINT, oatDir, false);
             versionChanged = !(oldVersion.equals(newVersion));
         }
 
@@ -135,6 +136,8 @@ public class TinkerLoadResult {
                 case ShareConstants.ERROR_LOAD_PATCH_UNCAUGHT_EXCEPTION:
                     errorCode = ShareConstants.ERROR_LOAD_EXCEPTION_UNCAUGHT;
                     break;
+                default:
+                    break;
             }
             tinker.getLoadReporter().onLoadException(exception, errorCode);
             return false;
@@ -144,13 +147,12 @@ public class TinkerLoadResult {
             case ShareConstants.ERROR_LOAD_GET_INTENT_FAIL:
                 TinkerLog.e(TAG, "can't get the right intent return code");
                 throw new TinkerRuntimeException("can't get the right intent return code");
-//                    break;
             case ShareConstants.ERROR_LOAD_DISABLE:
                 TinkerLog.w(TAG, "tinker is disable, just return");
                 break;
-//            case ShareConstants.ERROR_LOAD_PATCH_NOT_SUPPORTED:
-//                TinkerLog.w(TAG, "tinker is not supported, just return");
-//                break;
+            // case ShareConstants.ERROR_LOAD_PATCH_NOT_SUPPORTED:
+            //     TinkerLog.w(TAG, "tinker is not supported, just return");
+            //     break;
             case ShareConstants.ERROR_LOAD_PATCH_DIRECTORY_NOT_EXIST:
             case ShareConstants.ERROR_LOAD_PATCH_INFO_NOT_EXIST:
                 TinkerLog.w(TAG, "can't find patch file, is ok, just return");
@@ -210,8 +212,8 @@ public class TinkerLoadResult {
                 } else {
                     TinkerLog.e(TAG, "patch dex file not found, but path is null!!!!");
                     throw new TinkerRuntimeException("patch dex file not found, but path is null!!!!");
-//                        tinker.getLoadReporter().onLoadFileNotFound(null,
-//                            ShareConstants.TYPE_DEX, false);
+                    // tinker.getLoadReporter().onLoadFileNotFound(null,
+                    //     ShareConstants.TYPE_DEX, false);
                 }
                 break;
             case ShareConstants.ERROR_LOAD_PATCH_VERSION_DEX_OPT_FILE_NOT_EXIST:
@@ -226,8 +228,8 @@ public class TinkerLoadResult {
                 } else {
                     TinkerLog.e(TAG, "patch dex opt file not found, but path is null!!!!");
                     throw new TinkerRuntimeException("patch dex opt file not found, but path is null!!!!");
-//                        tinker.getLoadReporter().onLoadFileNotFound(null,
-//                            ShareConstants.TYPE_DEX, false);
+                    // tinker.getLoadReporter().onLoadFileNotFound(null,
+                    //     ShareConstants.TYPE_DEX, false);
                 }
                 break;
             case ShareConstants.ERROR_LOAD_PATCH_VERSION_LIB_DIRECTORY_NOT_EXIST:
@@ -240,8 +242,8 @@ public class TinkerLoadResult {
                     TinkerLog.e(TAG, "patch lib file directory not found, warning why the path is null!!!!");
                     throw new TinkerRuntimeException("patch lib file directory not found, warning why the path is null!!!!");
 
-//                        tinker.getLoadReporter().onLoadFileNotFound(null,
-//                            ShareConstants.TYPE_LIBRARY, true);
+                    // tinker.getLoadReporter().onLoadFileNotFound(null,
+                    //     ShareConstants.TYPE_LIBRARY, true);
                 }
 
                 break;
@@ -256,8 +258,8 @@ public class TinkerLoadResult {
                 } else {
                     TinkerLog.e(TAG, "patch lib file not found, but path is null!!!!");
                     throw new TinkerRuntimeException("patch lib file not found, but path is null!!!!");
-//                        tinker.getLoadReporter().onLoadFileNotFound(null,
-//                            ShareConstants.TYPE_LIBRARY, false);
+                    // tinker.getLoadReporter().onLoadFileNotFound(null,
+                    //     ShareConstants.TYPE_LIBRARY, false);
                 }
                 break;
             case ShareConstants.ERROR_LOAD_PATCH_VERSION_DEX_CLASSLOADER_NULL:
@@ -320,7 +322,7 @@ public class TinkerLoadResult {
             case ShareConstants.ERROR_LOAD_OK:
                 TinkerLog.i(TAG, "oh yeah, tinker load all success");
                 tinker.setTinkerLoaded(true);
-                //get load dex
+                // get load dex
                 dexes = ShareIntentUtil.getIntentPatchDexPaths(intentResult);
                 libs = ShareIntentUtil.getIntentPatchLibsPaths(intentResult);
 
@@ -334,6 +336,8 @@ public class TinkerLoadResult {
                     tinker.getLoadReporter().onLoadPatchVersionChanged(oldVersion, newVersion, patchDirectory, patchVersionDirectory.getName());
                 }
                 return true;
+            default:
+                break;
         }
         return false;
 

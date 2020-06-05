@@ -19,13 +19,13 @@ package com.tencent.tinker.lib.library;
 import android.content.Context;
 import android.os.Build;
 
+import com.tencent.tinker.entry.ApplicationLike;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.tinker.TinkerApplicationHelper;
 import com.tencent.tinker.lib.tinker.TinkerInstaller;
 import com.tencent.tinker.lib.tinker.TinkerLoadResult;
 import com.tencent.tinker.lib.util.TinkerLog;
 import com.tencent.tinker.loader.TinkerRuntimeException;
-import com.tencent.tinker.loader.app.ApplicationLike;
 import com.tencent.tinker.loader.shareutil.ShareConstants;
 import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
 import com.tencent.tinker.loader.shareutil.ShareReflectUtil;
@@ -144,23 +144,26 @@ public class TinkerLoadLibrary {
         //TODO we should add cpu abi, and the real path later
         if (tinker.isEnabledForNativeLib() && tinker.isTinkerLoaded()) {
             TinkerLoadResult loadResult = tinker.getTinkerLoadResultIfPresent();
-            if (loadResult.libs != null) {
-                for (String name : loadResult.libs.keySet()) {
-                    if (name.equals(relativeLibPath)) {
-                        String patchLibraryPath = loadResult.libraryDirectory + "/" + name;
-                        File library = new File(patchLibraryPath);
-                        if (library.exists()) {
-                            //whether we check md5 when load
-                            boolean verifyMd5 = tinker.isTinkerLoadVerify();
-                            if (verifyMd5 && !SharePatchFileUtil.verifyFileMd5(library, loadResult.libs.get(name))) {
-                                tinker.getLoadReporter().onLoadFileMd5Mismatch(library, ShareConstants.TYPE_LIBRARY);
-                            } else {
-                                System.load(patchLibraryPath);
-                                TinkerLog.i(TAG, "loadLibraryFromTinker success:" + patchLibraryPath);
-                                return true;
-                            }
-                        }
-                    }
+            if (loadResult.libs == null) {
+                return false;
+            }
+            for (String name : loadResult.libs.keySet()) {
+                if (!name.equals(relativeLibPath)) {
+                    continue;
+                }
+                String patchLibraryPath = loadResult.libraryDirectory + "/" + name;
+                File library = new File(patchLibraryPath);
+                if (!library.exists()) {
+                    continue;
+                }
+                //whether we check md5 when load
+                boolean verifyMd5 = tinker.isTinkerLoadVerify();
+                if (verifyMd5 && !SharePatchFileUtil.verifyFileMd5(library, loadResult.libs.get(name))) {
+                    tinker.getLoadReporter().onLoadFileMd5Mismatch(library, ShareConstants.TYPE_LIBRARY);
+                } else {
+                    System.load(patchLibraryPath);
+                    TinkerLog.i(TAG, "loadLibraryFromTinker success:" + patchLibraryPath);
+                    return true;
                 }
             }
         }

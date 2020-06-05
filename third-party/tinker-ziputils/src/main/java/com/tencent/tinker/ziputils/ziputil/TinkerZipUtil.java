@@ -46,16 +46,6 @@ public class TinkerZipUtil {
         }
     }
 
-    public static void extractTinkerEntry(TinkerZipEntry zipEntry, InputStream inputStream, TinkerZipOutputStream outputStream) throws IOException {
-        outputStream.putNextEntry(zipEntry);
-        byte[] buffer = new byte[BUFFER_SIZE];
-
-        for (int length = inputStream.read(buffer); length != -1; length = inputStream.read(buffer)) {
-            outputStream.write(buffer, 0, length);
-        }
-        outputStream.closeEntry();
-    }
-
     public static void extractLargeModifyFile(TinkerZipEntry sourceArscEntry, File newFile, long newFileCrc, TinkerZipOutputStream outputStream) throws IOException {
         TinkerZipEntry newArscZipEntry = new TinkerZipEntry(sourceArscEntry);
 
@@ -77,6 +67,19 @@ public class TinkerZipUtil {
             if (in != null) {
                 in.close();
             }
+        }
+    }
+
+    public static boolean validateZipEntryName(File destDir, String entryName) {
+        if (entryName == null || entryName.isEmpty()) {
+            return false;
+        }
+        try {
+            final String canonicalDestinationDir = destDir.getCanonicalPath();
+            final File destEntryFile = destDir.toPath().resolve(entryName).toFile();
+            return destEntryFile.getCanonicalPath().startsWith(canonicalDestinationDir + File.separator);
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 }

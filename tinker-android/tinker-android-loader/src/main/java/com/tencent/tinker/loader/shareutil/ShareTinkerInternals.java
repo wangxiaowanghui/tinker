@@ -30,6 +30,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.List;
@@ -43,12 +44,13 @@ import java.util.zip.ZipFile;
  * Created by zhangshaowen on 16/3/10.
  */
 public class ShareTinkerInternals {
-    private static final String  TAG       = "Tinker.TinkerInternals";
-    private static final boolean VM_IS_ART = isVmArt(System.getProperty("java.vm.version"));
-    private static final boolean VM_IS_JIT = isVmJitInternal();
-
+    private static final String  TAG                   = "Tinker.TinkerInternals";
+    private static final boolean VM_IS_ART             = isVmArt(System.getProperty("java.vm.version"));
+    private static final boolean VM_IS_JIT             = isVmJitInternal();
     private static final String  PATCH_PROCESS_NAME    = ":patch";
+
     private static       Boolean isPatchProcess        = null;
+    private static       Boolean isARKHotRunning       = null;
     /**
      * or you may just hardcode them in your app
      */
@@ -62,6 +64,35 @@ public class ShareTinkerInternals {
 
     public static boolean isVmJit() {
         return VM_IS_JIT && Build.VERSION.SDK_INT < 24;
+    }
+
+    public static boolean isArkHotRuning() {
+        if (isARKHotRunning != null) {
+            return isARKHotRunning;
+        }
+        isARKHotRunning = false;
+        Class<?> arkApplicationInfo = null;
+        try {
+            arkApplicationInfo = ClassLoader.getSystemClassLoader()
+                .getParent().loadClass("com.huawei.ark.app.ArkApplicationInfo");
+            Method isRunningInArkHot = null;
+            isRunningInArkHot = arkApplicationInfo.getDeclaredMethod("isRunningInArk");
+            isRunningInArkHot.setAccessible(true);
+            isARKHotRunning = (Boolean) isRunningInArkHot.invoke(null);
+        } catch (ClassNotFoundException e) {
+            Log.i(TAG, "class not found exception");
+        } catch (NoSuchMethodException e) {
+            Log.i(TAG, "no such method exception");
+        } catch (SecurityException e) {
+            Log.i(TAG, "security exception");
+        } catch (IllegalAccessException e) {
+            Log.i(TAG, "illegal access exception");
+        } catch (InvocationTargetException e) {
+            Log.i(TAG, "invocation target exception");
+        } catch (IllegalArgumentException e) {
+            Log.i(TAG, "illegal argument exception");
+        }
+        return isARKHotRunning;
     }
 
     public static boolean isAfterAndroidO() {
@@ -270,6 +301,10 @@ public class ShareTinkerInternals {
         return (flag & ShareConstants.TINKER_RESOURCE_MASK) != 0;
     }
 
+    public static boolean isTinkerEnabledForArkHot(int flag) {
+        return (flag & ShareConstants.TINKER_ARKHOT_MASK) != 0;
+    }
+
     public static String getTypeString(int type) {
         switch (type) {
             case ShareConstants.TYPE_DEX:
@@ -296,7 +331,8 @@ public class ShareTinkerInternals {
      */
     public static void setTinkerDisableWithSharedPreferences(Context context) {
         SharedPreferences sp = context.getSharedPreferences(ShareConstants.TINKER_SHARE_PREFERENCE_CONFIG, Context.MODE_MULTI_PROCESS);
-        sp.edit().putBoolean(getTinkerSharedPreferencesName(), false).commit();
+        String keyName = getTinkerSwitchSPKey(context);
+        sp.edit().putBoolean(keyName, false).commit();
     }
 
     /**
@@ -310,11 +346,33 @@ public class ShareTinkerInternals {
             return false;
         }
         SharedPreferences sp = context.getSharedPreferences(ShareConstants.TINKER_SHARE_PREFERENCE_CONFIG, Context.MODE_MULTI_PROCESS);
-        return sp.getBoolean(getTinkerSharedPreferencesName(), true);
+        String keyName = getTinkerSwitchSPKey(context);
+        return sp.getBoolean(keyName, true);
     }
 
-    private static String getTinkerSharedPreferencesName() {
-        return ShareConstants.TINKER_ENABLE_CONFIG + ShareConstants.TINKER_VERSION;
+    private static String getTinkerSwitchSPKey(Context context) {
+        String tmpTinkerId = getManifestTinkerID(context);
+        if (isNullOrNil(tmpTinkerId)) {
+            tmpTinkerId = "@@";
+        }
+        return ShareConstants.TINKER_ENABLE_CONFIG_PREFIX + ShareConstants.TINKER_VERSION + "_" + tmpTinkerId;
+    }
+
+    public static int getSafeModeCount(Context context) {
+        String processName = ShareTinkerInternals.getProcessName(context);
+        String preferName = ShareConstants.TINKER_OWN_PREFERENCE_CONFIG_PREFIX + processName;
+        SharedPreferences sp = context.getSharedPreferences(preferName, Context.MODE_PRIVATE);
+        int count = sp.getInt(ShareConstants.TINKER_SAFE_MODE_COUNT_PREFIX + ShareConstants.TINKER_VERSION, 0);
+        Log.w(TAG, "getSafeModeCount: preferName:" + preferName + " count:" + count);
+        return count;
+    }
+
+    public static void setSafeModeCount(Context context, int count) {
+        String processName = ShareTinkerInternals.getProcessName(context);
+        String preferName = ShareConstants.TINKER_OWN_PREFERENCE_CONFIG_PREFIX + processName;
+        SharedPreferences sp = context.getSharedPreferences(preferName, Context.MODE_PRIVATE);
+        sp.edit().putInt(ShareConstants.TINKER_SAFE_MODE_COUNT_PREFIX + ShareConstants.TINKER_VERSION, count).commit();
+        Log.w(TAG, "setSafeModeCount: preferName:" + preferName + " count:" + count);
     }
 
     public static boolean isTinkerEnabled(int flag) {
@@ -382,6 +440,27 @@ public class ShareTinkerInternals {
             }
         }
 
+    }
+
+    public static void killProcessExceptMain(Context context) {
+        final ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        if (am == null) {
+            return;
+        }
+        List<ActivityManager.RunningAppProcessInfo> appProcessList = am.getRunningAppProcesses();
+        if (appProcessList != null) {
+            // NOTE: getRunningAppProcess() ONLY GIVE YOU THE PROCESS OF YOUR OWN PACKAGE IN ANDROID M
+            // BUT THAT'S ENOUGH HERE
+            for (ActivityManager.RunningAppProcessInfo ai : appProcessList) {
+                if (ai.uid != android.os.Process.myUid()) {
+                    continue;
+                }
+                if (ai.processName.equals(context.getPackageName())) {
+                    continue;
+                }
+                android.os.Process.killProcess(ai.pid);
+            }
+        }
     }
 
     /**
@@ -456,6 +535,7 @@ public class ShareTinkerInternals {
                     in.close();
                 }
             } catch (Exception e) {
+                // Ignored.
             }
         }
 
